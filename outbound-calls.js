@@ -518,6 +518,8 @@ export function registerOutboundRoutes(fastify) {
             case "mark":
   
 
+            console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
+            console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
               if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
                 console.log("🟢 [Agent] Finished — safe to resume background");
                 BackgroundController.stop(); // ensure old loop dead
