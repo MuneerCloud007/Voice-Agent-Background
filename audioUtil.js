@@ -174,69 +174,113 @@ export function encodeMuLawBuffer(pcm) {
    Stream background.raw -> Twilio media stream
    connection: object { ws: WebSocket, streamSid: string }
    ------------------------- */
+
+
+   const BackgroundController = {
+  running: false,
+  cancel: false,
+
+  start() {
+    if (this.running && !this.cancel) {
+      console.log("⚠️ [BG] start() ignored — background already running");
+      return;
+    }
+    console.log("▶️ [BG] Background STARTED");
+    this.running = true;
+    this.cancel = false;
+  },
+
+  stop() {
+    if (this.cancel === true) {
+      console.log("⚠️ [BG] stop() ignored — background already stopped");
+      return;
+    }
+    console.log("⛔ [BG] STOP REQUESTED");
+    this.cancel = true;
+  }
+};
+
 export async function streamBackgroundToTwilio(
   connection,
   rawPath = "./background.raw",
-  volumeFactor = 1.0,
+  volumeFactor = 1.0,     // <-- real volume multiplier
   loop = true
 ) {
   if (!connection || !connection.streamSid || !connection.ws) {
-    throw new Error("Missing Twilio connection or streamSid");
+    console.error("❌ [BG] Cannot start — missing Twilio connection");
+    return;
   }
 
+  BackgroundController.start();
+
+  console.log(`🔊 [BG] Loading raw file: ${rawPath}`);
+
   const pcmBuf = fs.readFileSync(rawPath);
-  const SAMPLES_PER_FRAME = 160; // 20ms @ 8000
-  const FRAME_BYTES = SAMPLES_PER_FRAME * 2; // 320 bytes
+  const SAMPLES = 160; // 20ms
+  const FRAME = SAMPLES * 2;
 
-  // function to send one frame
-  const sendFrameAtOffset = (offset) => {
-    const frameBuf = pcmBuf.slice(offset, offset + FRAME_BYTES);
-    const samples = new Int16Array(frameBuf.buffer, frameBuf.byteOffset, SAMPLES_PER_FRAME);
+  let offset = 0;
+  let frameCount = 0;
 
-    // apply volumeFactor (in-place)
-    if (volumeFactor !== 1.0) {
-      for (let i = 0; i < samples.length; i++) {
-        let s = Math.round(samples[i] * volumeFactor);
-        if (s > 32767) s = 32767;
-        if (s < -32768) s = -32768;
-        samples[i] = s;
+  console.log("🎧 [BG] Streaming started…");
+
+  while (BackgroundController.running && !BackgroundController.cancel) {
+
+    if (offset + FRAME > pcmBuf.length) {
+      if (loop) {
+        console.log("🔁 [BG] Looping background audio…");
+        offset = 0;
+      } else {
+        console.log("📦 [BG] Reached end of file — stopping");
+        break;
       }
     }
 
-    const mulaw = encodeMuLawBuffer(samples);
-    const payload = mulaw.toString("base64");
+    // Extract PCM samples
+    const samples = new Int16Array(
+      pcmBuf.buffer,
+      pcmBuf.byteOffset + offset,
+      SAMPLES
+    );
 
- const media = {
-  event: "media",
-  streamSid: connection.streamSid,
-  media: {
-    payload,
-    track: "background",             // <--- important: background track
-    chunk: (++outboundChunkCounter).toString(),
-    timestamp: Date.now().toString()
-  },
-};
+    // REAL VOLUME CONTROL — dim the background
+    if (volumeFactor !== 1.0) {
+      for (let i = 0; i < samples.length; i++) {
+        let v = samples[i] * volumeFactor;
 
-    connection.ws.send(JSON.stringify(media));
-  };
+        // clip to avoid distortion
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
 
-  // streaming loop
-  let offset = 0;
-  let chunkCounter = 0;
-  while (true) {
-    if (offset + FRAME_BYTES > pcmBuf.length) {
-      if (loop) offset = 0;
-      else break;
+        samples[i] = v;
+      }
     }
 
-    sendFrameAtOffset(offset);
-    offset += FRAME_BYTES;
-    chunkCounter++;
+    // µ-law encoding
+    const payload = encodeMuLawBuffer(samples).toString("base64");
 
-    // maintain 20ms real-time pacing
-    await new Promise((r) => setTimeout(r, 20));
+    connection.ws.send(
+      JSON.stringify({
+        event: "media",
+        streamSid: connection.streamSid,
+        media: { payload, track: "background" }
+      })
+    );
+
+    frameCount++;
+    console.log(`📨 [BG] Sent frame #${frameCount}, offset=${offset}, volume=${volumeFactor}`);
+
+    offset += FRAME;
+
+    await new Promise((r) => setTimeout(r, 10));
   }
 
-  console.log("Finished streaming background.raw");
+  BackgroundController.running = false;
+  console.log("🛑 [BG] Background FULLY STOPPED (loop exited)");
 }
 
+
+
+export {
+  BackgroundController
+}

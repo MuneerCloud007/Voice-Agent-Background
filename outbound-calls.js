@@ -7,7 +7,8 @@ import {
 
   streamBackgroundToTwilio,
   generateWhiteNoise,
-  encodeMuLawBuffer
+  encodeMuLawBuffer,
+  BackgroundController
 
 } from "./audioUtil.js";
 // ---------- μ-law decode (ITU G.711) ----------
@@ -24,17 +25,17 @@ export function mulawDecode(uLawByte) {
 export function mulawEncode(sample) {
   const BIAS = 0x84;
   let sign = 0;
-  
+
   if (sample < 0) {
     sign = 0x80;
     sample = -sample;
   }
-  
+
   sample += BIAS;
   if (sample > 0x7FFF) sample = 0x7FFF;
 
   let exponent = 7;
-  for (let mask = 0x4000; (sample & mask) === 0 && exponent > 0; exponent--, mask >>= 1) {}
+  for (let mask = 0x4000; (sample & mask) === 0 && exponent > 0; exponent--, mask >>= 1) { }
 
   const mantissa = (sample >> (exponent + 3)) & 0x0F;
   return (~(sign | (exponent << 4) | mantissa)) & 0xFF;
@@ -45,8 +46,8 @@ const bg = fs.readFileSync("./assets/office.raw");
 let bgOffset = 0;
 
 // Adjusted volumes to prevent clipping
-const VOICE_VOL = 0.99;  // High, clear voice
-const BG_VOL = 0.40;     // Noticeable background ambiance
+const VOICE_VOL = 1;  // High, clear voice
+const BG_VOL = 0.25;
 
 // Smoothing filters
 let prevVoiceSample = 0;
@@ -70,7 +71,7 @@ function removeDCOffset(sample) {
 function softLimit(sample) {
   const threshold = 26000;  // Lower threshold for earlier compression
   const ratio = 3.0;        // Compression ratio
-  
+
   if (sample > threshold) {
     const excess = sample - threshold;
     return threshold + Math.tanh(excess / 5000) * 6767;
@@ -78,7 +79,7 @@ function softLimit(sample) {
     const excess = sample + threshold;
     return -threshold + Math.tanh(excess / 5000) * 6767;
   }
-  
+
   return sample;
 }
 
@@ -107,17 +108,17 @@ export function mixChunk(ulawChunk) {
 
     const rawBgSample = bg.readInt16LE(bgOffset) * BG_VOL;
     bgOffset += 2;
-    
+
     // Smooth background audio (less aggressive filtering)
     const smoothBg = lowPassFilter(rawBgSample, prevBgSample, 0.3);
     prevBgSample = smoothBg;
 
     // Mix samples
     let mixed = pcm[i] + smoothBg;
-    
+
     // Remove DC offset (prevents clicks and pops)
     mixed = removeDCOffset(mixed);
-    
+
     // Apply soft limiting
     mixed = softLimit(mixed);
 
@@ -179,36 +180,7 @@ function mixWithBackground(base64Voice, backgroundPath) {
 
 
 
-function extractBackgroundNoise(backgroundPath) {
-  return new Promise((resolve, reject) => {
-    if (!fs.existsSync(backgroundPath)) {
-      return reject(new Error("Background file not found"));
-    }
 
-    const outputStream = new PassThrough();
-    const chunks = [];
-
-    outputStream.on("data", (c) => chunks.push(c));
-    outputStream.on("end", () => {
-      const finalBuffer = Buffer.concat(chunks);
-      resolve(finalBuffer.toString("base64"));   // base64 mulaw 8k
-    });
-    outputStream.on("error", reject);
-
-    ffmpeg(backgroundPath)
-      .audioFilters([
-        "aresample=8000",   // Convert to 8k
-        "volume=0.20",      // 🔥 Low volume background (20%)
-      ])
-      .outputOptions([
-        "-c:a pcm_mulaw",   // Convert to µ-law
-        "-ar 8000",
-        "-ac 1",
-      ])
-      .format("mulaw")
-      .pipe(outputStream, { end: true });
-  });
-}
 
 
 
@@ -315,6 +287,8 @@ export function registerOutboundRoutes(fastify) {
       let elevenLabsWs = null;
       let customParameters = null;  // Add this to store parameters
       let flag = false;
+      let eleven_AUDIO_COUNT = -1
+      let twilio_AUDIO_COUNT = 0
 
       // Handle WebSocket errors
       ws.on('error', console.error);
@@ -343,7 +317,7 @@ export function registerOutboundRoutes(fastify) {
               const message = JSON.parse(data);
               let outboundChunkCounter = 0;
 
-              console.log("[ElevenLabs] Received message:", message);
+              // console.log("[ElevenLabs] Received message:", message);
 
 
               switch (message.type) {
@@ -357,6 +331,15 @@ export function registerOutboundRoutes(fastify) {
                       // 1. Get original audio chunk
                       const original = message.audio.chunk;
 
+                      console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                      BackgroundController.stop();
+
+                      ws.send(JSON.stringify({
+                        event: "incomming_call",
+                        streamSid,
+                        mark: { name: "agent_inclomming" }
+                      }));
+
 
                       // 2. Mix with background
                       // 2. Mix with background
@@ -364,7 +347,9 @@ export function registerOutboundRoutes(fastify) {
 
                       const mixed = mixChunk(ulaw);
                       // 3. Send mixed audio back
-                   
+
+
+
 
 
                       const audioData = {
@@ -377,13 +362,26 @@ export function registerOutboundRoutes(fastify) {
                         },
                       };
                       ws.send(JSON.stringify(audioData));
+                      ws.send(JSON.stringify({
+                        event: "mark",
+                        streamSid,
+                        mark: { name: "agent_done" }
+                      }));
+                      ++eleven_AUDIO_COUNT
+
+
 
 
                     } else if (message.audio_event?.audio_base_64) {
                       // 1. Original inbound from ElevenLabs
                       const original = message.audio_event.audio_base_64;
-
-
+                      console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                      BackgroundController.stop();
+                      ws.send(JSON.stringify({
+                        event: "incomming_call",
+                        streamSid,
+                        mark: { name: "agent_inclomming" }
+                      }));
                       // 2. Mix
                       // 2. Mix with background
                       const ulaw = Buffer.from(original, "base64");
@@ -400,6 +398,12 @@ export function registerOutboundRoutes(fastify) {
                         },
                       };
                       ws.send(JSON.stringify(audioData));
+                      ws.send(JSON.stringify({
+                        event: "mark",
+                        streamSid,
+                        mark: { name: "agent_done" }
+                      }));
+                      ++eleven_AUDIO_COUNT
 
 
 
@@ -408,6 +412,7 @@ export function registerOutboundRoutes(fastify) {
                   } else {
                     console.log("[ElevenLabs] Received audio but no StreamSid yet");
                   }
+                  console.log("__-eleven_AUDIO_COUNT___", eleven_AUDIO_COUNT);
                   break;
 
                 case "interruption":
@@ -423,11 +428,7 @@ export function registerOutboundRoutes(fastify) {
                 case "agent_response":
                   console.log("[ElevenLabs] Agent response event:", message.agent_response_event);
 
-                  ws.send(JSON.stringify({
-                    event: "mark",
-                    streamSid,
-                    mark: { name: "agent_done" }
-                  }));
+
                   break;
 
                 case "ping":
@@ -437,10 +438,6 @@ export function registerOutboundRoutes(fastify) {
                       type: "pong",
                       event_id: message.ping_event.event_id
                     }));
-
-
-
-
 
                   }
                   break;
@@ -483,7 +480,9 @@ export function registerOutboundRoutes(fastify) {
         try {
           const msg = JSON.parse(message);
 
-
+          if (msg.event != "media") {
+            console.log("MESSAGE RECEIVED FROM TWILIO:", msg.event);
+          }
           if (msg.event == "mark") {
             console.log("EVENT :", msg.event);
           }
@@ -496,17 +495,6 @@ export function registerOutboundRoutes(fastify) {
               connection["streamSid"] = streamSid;
               connection['callSid'] = callSid;
 
-               
-
-              // if (!noiseInterval) {
-              //   noiseInterval = setInterval(() => {
-              //     sendNoiseChunk(connection);
-              //   }, 20); // Send every 20ms for 8kHz audio
-              // }
-
-              //ffmpeg -i background.wav -ar 8000 -ac 1 -f s16le pipe:1 > background.raw
-
-              //I feel due this there some latency in between 3-4s 
 
 
 
@@ -514,6 +502,8 @@ export function registerOutboundRoutes(fastify) {
               console.log(`[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
               console.log('[Twilio] Start parameters:', customParameters);
               break;
+
+
 
             case "media":
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
@@ -526,20 +516,38 @@ export function registerOutboundRoutes(fastify) {
               break;
 
             case "mark":
-               if (!flag) {
-              
-               streamBackgroundToTwilio(
-                  connection,
-                  "./assets/office.raw",0.6, true)
-               flag = true;
+  
 
-               }
+              if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
+                console.log("🟢 [Agent] Finished — safe to resume background");
+                BackgroundController.stop(); // ensure old loop dead
+                if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                  console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                  twilio_AUDIO_COUNT = 0;
+                  eleven_AUDIO_COUNT = -1
+
+                  if (connection.callSid) {
+                    twilioClient.calls(connection.callSid).update({ status: "completed" });
+                  }
+                  return; 
+                }
+                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.7, true);
+                twilio_AUDIO_COUNT = 0;
+                eleven_AUDIO_COUNT = -1
+              }
+              else {
+                twilio_AUDIO_COUNT++;
+              }
               console.log("✔ All audio finished playing to caller!");
               break;
 
 
             case "stop":
               console.log(`[Twilio] Stream ${streamSid} ended`);
+              twilio_AUDIO_COUNT = 0;
+              eleven_AUDIO_COUNT = -1;
+              BackgroundController.stop(); 
+
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 elevenLabsWs.close();
               }
@@ -549,13 +557,19 @@ export function registerOutboundRoutes(fastify) {
               console.log(`[Twilio] Unhandled event: ${msg.event}`);
           }
         } catch (error) {
+          BackgroundController.stop(); // ensure old loop dead
+          twilio_AUDIO_COUNT = 0;
+          eleven_AUDIO_COUNT = -1;
+
           console.error("[Twilio] Error processing message:", error);
         }
       });
 
-      // Handle WebSocket closure
       ws.on("close", () => {
         console.log("[Twilio] Client disconnected");
+        BackgroundController.stop(); // ensure old loop dead
+        twilio_AUDIO_COUNT = 0;
+        eleven_AUDIO_COUNT = -1;
         if (elevenLabsWs?.readyState === WebSocket.OPEN) {
           elevenLabsWs.close();
         }

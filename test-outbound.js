@@ -1,10 +1,16 @@
-
 import WebSocket from "ws";
 import Twilio from "twilio";
 import { PassThrough } from 'stream';
 import ffmpeg from 'fluent-ffmpeg';
-import fs from "fs";
+import fs from 'fs';
+import {
 
+  streamBackgroundToTwilio,
+  generateWhiteNoise,
+  encodeMuLawBuffer,
+  BackgroundController
+
+} from "./audioUtil.js";
 // ---------- μ-law decode (ITU G.711) ----------
 export function mulawDecode(uLawByte) {
   uLawByte = ~uLawByte & 0xff;
@@ -19,133 +25,168 @@ export function mulawDecode(uLawByte) {
 export function mulawEncode(sample) {
   const BIAS = 0x84;
   let sign = 0;
+
   if (sample < 0) {
     sign = 0x80;
     sample = -sample;
   }
+
   sample += BIAS;
   if (sample > 0x7FFF) sample = 0x7FFF;
 
   let exponent = 7;
-  for (let mask = 0x4000; (sample & mask) === 0 && exponent > 0; exponent--, mask >>= 1) {}
+  for (let mask = 0x4000; (sample & mask) === 0 && exponent > 0; exponent--, mask >>= 1) { }
 
   const mantissa = (sample >> (exponent + 3)) & 0x0F;
   return (~(sign | (exponent << 4) | mantissa)) & 0xFF;
 }
 
 // ------------ Load background PCM 16-bit mono 8000Hz ------------
-const bg = fs.readFileSync("./assets/office.raw");  // PCM s16le
+const bg = fs.readFileSync("./assets/office.raw");
 let bgOffset = 0;
 
-// FFT-equivalent volumes from your ffmpeg pipeline
-const VOICE_VOL = 1.0;
-const BG_VOL = 0.3;
+// Adjusted volumes to prevent clipping
+const VOICE_VOL = 1;  // High, clear voice
+const BG_VOL = 0.25;
+
+// Smoothing filters
+let prevVoiceSample = 0;
+let prevBgSample = 0;
+let dcFilterState = 0;
+
+// Low-pass filter for smoothing (removes high-frequency artifacts)
+function lowPassFilter(current, previous, alpha = 0.15) {
+  return previous + alpha * (current - previous);
+}
+
+// DC offset removal filter
+function removeDCOffset(sample) {
+  const DC_COEFF = 0.995;
+  const filtered = sample - dcFilterState;
+  dcFilterState = dcFilterState * DC_COEFF + sample * (1 - DC_COEFF);
+  return filtered;
+}
+
+// Soft limiter with smoother compression curve
+function softLimit(sample) {
+  const threshold = 26000;  // Lower threshold for earlier compression
+  const ratio = 3.0;        // Compression ratio
+
+  if (sample > threshold) {
+    const excess = sample - threshold;
+    return threshold + Math.tanh(excess / 5000) * 6767;
+  } else if (sample < -threshold) {
+    const excess = sample + threshold;
+    return -threshold + Math.tanh(excess / 5000) * 6767;
+  }
+
+  return sample;
+}
 
 // ---------------------------------------------------------------
-// EXACT FFmpeg-style amix in JavaScript
+// Fixed audio mixer with smooth filtering
 // ---------------------------------------------------------------
 export function mixChunk(ulawChunk) {
   const len = ulawChunk.length;
   const pcm = new Int16Array(len);
 
-  // 1. decode u-law→PCM16
+  // 1. Decode μ-law → PCM16 with smoothing
   for (let i = 0; i < len; i++) {
-    pcm[i] = mulawDecode(ulawChunk[i]) * VOICE_VOL;
+    const decoded = mulawDecode(ulawChunk[i]) * VOICE_VOL;
+    // Apply low-pass filter for smoothness
+    const smoothed = lowPassFilter(decoded, prevVoiceSample, 0.18);
+    prevVoiceSample = smoothed;
+    pcm[i] = smoothed;
   }
 
-  // 2. mix background PCM16
+  // 2. Mix background PCM16 with smoothing
   for (let i = 0; i < len; i++) {
-    if (bgOffset >= bg.length) bgOffset = 0;
+    // Loop background audio
+    if (bgOffset >= bg.length) {
+      bgOffset = 0;
+    }
 
-    const bgSample = bg.readInt16LE(bgOffset) * BG_VOL;
+    const rawBgSample = bg.readInt16LE(bgOffset) * BG_VOL;
     bgOffset += 2;
 
-    let mixed = pcm[i] + bgSample;
+    // Smooth background audio (less aggressive filtering)
+    const smoothBg = lowPassFilter(rawBgSample, prevBgSample, 0.3);
+    prevBgSample = smoothBg;
 
-    // Clamp 16-bit like FFmpeg
+    // Mix samples
+    let mixed = pcm[i] + smoothBg;
+
+    // Remove DC offset (prevents clicks and pops)
+    mixed = removeDCOffset(mixed);
+
+    // Apply soft limiting
+    mixed = softLimit(mixed);
+
+    // Hard clamp as final safety
     if (mixed > 32767) mixed = 32767;
     if (mixed < -32768) mixed = -32768;
 
-    pcm[i] = mixed;
+    pcm[i] = Math.round(mixed);
   }
 
-  // 3. encode back to μ-law
+  // 3. Encode back to μ-law
   const out = Buffer.alloc(len);
   for (let i = 0; i < len; i++) {
     out[i] = mulawEncode(pcm[i]);
   }
 
-  return out; // raw bytes → send base64 to Twilio
+  return out;
 }
 
-
-export function mixWithBackground(base64Voice, backgroundPath) {
+// Optional: Reset filters when starting new audio stream
+export function resetBackgroundOffset() {
+  bgOffset = 0;
+  prevVoiceSample = 0;
+  prevBgSample = 0;
+  dcFilterState = 0;
+}
+// Optiona
+function mixWithBackground(base64Voice, backgroundPath) {
   return new Promise((resolve, reject) => {
     const voiceBuffer = Buffer.from(base64Voice, "base64");
 
-    // Convert Twilio MULAW → WAV PCM (in-memory)
-    const mulawStream = new PassThrough();
-    mulawStream.end(voiceBuffer);
+    const voiceStream = new PassThrough();
+    voiceStream.end(voiceBuffer);
 
-    const wavStream = new PassThrough();
-    const wavChunks = [];
+    const outputStream = new PassThrough();
+    const chunks = [];
 
-    wavStream.on("data", (c) => wavChunks.push(c));
-    wavStream.on("end", () => {
-      const wavBuffer = Buffer.concat(wavChunks);
-
-      const voiceWavStream = new PassThrough();
-      voiceWavStream.end(wavBuffer);
-
-      // FINAL OUTPUT STREAM
-      const output = new PassThrough();
-      const finalChunks = [];
-
-      // IMPORTANT: attach listeners BEFORE piping
-      output.on("data", (c) => finalChunks.push(c));
-      output.on("error", reject);
-      output.on("end", () => {
-        const mixed = Buffer.concat(finalChunks);
-        resolve(mixed.toString("base64"));
-      });
-
-      // MIX WAV + BACKGROUND → MULAW
-      ffmpeg()
-        .addInput(voiceWavStream)
-        .inputOptions(["-f wav"])
-        .addInput(backgroundPath)
-        .addOptions(["-nostdin"])
-        .audioFilters([
-          "volume=1.0[a0]",
-          "volume=0.25[a1]",
-          "[a0][a1]amix=inputs=2:duration=first[aout]"
-        ])
-        .outputOptions([
-          "-map [aout]",
-          "-c:a pcm_mulaw",
-          "-ar 8000",
-          "-ac 1",
-          "-f mulaw",
-        ])
-        .output("-")          // ← SUPER IMPORTANT FIX
-        .on("error", reject)
-        .pipe(output, { end: true });
+    outputStream.on("data", (c) => chunks.push(c));
+    outputStream.on("end", () => {
+      const finalBuffer = Buffer.concat(chunks);
+      resolve(finalBuffer.toString("base64"));
     });
+    outputStream.on("error", reject);
 
-    wavStream.on("error", reject);
-
-    // FFmpeg mulaw → wav convert
-    ffmpeg(mulawStream)
-      .inputOptions(["-f mulaw", "-ar 8000", "-ac 1"])
-      .addOptions(["-nostdin"])
-      .audioCodec("pcm_s16le")
-      .audioFrequency(8000)
-      .audioChannels(1)
-      .format("wav")
-      .on("error", reject)
-      .pipe(wavStream, { end: true });
+    ffmpeg()
+      .input(voiceStream)
+      .inputOptions(["-f mulaw", "-ar 8000", "-ac 1"])   // Twilio inbound = mulaw 8k
+      .input(backgroundPath)                             // your background.wav file
+      .complexFilter([
+        { filter: "volume", options: { volume: 1.0 }, inputs: "0:a", outputs: "v0" },
+        { filter: "volume", options: { volume: 0.3 }, inputs: "1:a", outputs: "bg" },
+        { filter: "amix", options: { inputs: 2, duration: "first" }, inputs: ["v0", "bg"], outputs: "mixed" }
+      ])
+      .outputOptions(["-map [mixed]", "-c:a pcm_mulaw", "-ar 8000", "-ac 1"])  // return mulaw back
+      .format("mulaw")
+      .pipe(outputStream, { end: true });
   });
 }
+
+
+
+
+
+
+
+let noiseInterval = null;
+
+
 export function registerOutboundRoutes(fastify) {
   // Check for required environment variables
   const {
@@ -204,6 +245,7 @@ export function registerOutboundRoutes(fastify) {
         url: `https://${request.headers.host}/outbound-call-twiml`
       });
 
+
       reply.send({
         success: true,
         message: "Call initiated",
@@ -244,6 +286,9 @@ export function registerOutboundRoutes(fastify) {
       let callSid = null;
       let elevenLabsWs = null;
       let customParameters = null;  // Add this to store parameters
+      let flag = false;
+      let eleven_AUDIO_COUNT = -1
+      let twilio_AUDIO_COUNT = 0
 
       // Handle WebSocket errors
       ws.on('error', console.error);
@@ -270,9 +315,11 @@ export function registerOutboundRoutes(fastify) {
           elevenLabsWs.on("message", async (data) => {
             try {
               const message = JSON.parse(data);
+              let outboundChunkCounter = 0;
 
-              console.log("ELEVEN LABS MESSAGE");
-              console.log(message);
+              // console.log("[ElevenLabs] Received message:", message);
+
+
               switch (message.type) {
                 case "conversation_initiation_metadata":
                   console.log("[ElevenLabs] Received initiation metadata");
@@ -284,46 +331,88 @@ export function registerOutboundRoutes(fastify) {
                       // 1. Get original audio chunk
                       const original = message.audio.chunk;
 
+                      console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                      BackgroundController.stop();
+
+                      ws.send(JSON.stringify({
+                        event: "incomming_call",
+                        streamSid,
+                        mark: { name: "agent_inclomming" }
+                      }));
+
+
+                      // 2. Mix with background
                       // 2. Mix with background
                       const ulaw = Buffer.from(original, "base64");
 
                       const mixed = mixChunk(ulaw);
                       // 3. Send mixed audio back
-                      console.log("SENDING MIXED AUDIO CHUNK");
-                      console.log(mixed.toString("base64"));
+
+
+
+
+
                       const audioData = {
                         event: "media",
                         streamSid,
                         media: {
                           payload: mixed.toString("base64"),   // <<< mixed instead of original
+                          track: "outbound",   // <--- send agent voice on outbound track
+                          timestamp: Date.now().toString()
                         },
                       };
                       ws.send(JSON.stringify(audioData));
+                      ws.send(JSON.stringify({
+                        event: "mark",
+                        streamSid,
+                        mark: { name: "agent_done" }
+                      }));
+                      ++eleven_AUDIO_COUNT
+
+
+
 
                     } else if (message.audio_event?.audio_base_64) {
                       // 1. Original inbound from ElevenLabs
                       const original = message.audio_event.audio_base_64;
-
+                      console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                      BackgroundController.stop();
+                      ws.send(JSON.stringify({
+                        event: "incomming_call",
+                        streamSid,
+                        mark: { name: "agent_inclomming" }
+                      }));
                       // 2. Mix
+                      // 2. Mix with background
                       const ulaw = Buffer.from(original, "base64");
 
                       const mixed = mixChunk(ulaw);
-                       console.log("SENDING MIXED AUDIO CHUNK");
-                      console.log(mixed.toString("base64"));
                       // 3. Send mixed audio
                       const audioData = {
                         event: "media",
                         streamSid,
                         media: {
-                          payload: mixed.toString("base64"),
+                          payload: mixed.toString("base64"),   // <<< mixed instead of original
+                          track: "outbound",   // <--- send agent voice on outbound track
+                          timestamp: Date.now().toString()
                         },
                       };
                       ws.send(JSON.stringify(audioData));
+                      ws.send(JSON.stringify({
+                        event: "mark",
+                        streamSid,
+                        mark: { name: "agent_done" }
+                      }));
+                      ++eleven_AUDIO_COUNT
+
+
+
 
                     }
                   } else {
                     console.log("[ElevenLabs] Received audio but no StreamSid yet");
                   }
+                  console.log("__-eleven_AUDIO_COUNT___", eleven_AUDIO_COUNT);
                   break;
 
                 case "interruption":
@@ -332,15 +421,24 @@ export function registerOutboundRoutes(fastify) {
                       event: "clear",
                       streamSid
                     }));
+
                   }
                   break;
 
+                case "agent_response":
+                  console.log("[ElevenLabs] Agent response event:", message.agent_response_event);
+
+
+                  break;
+
                 case "ping":
+                  console.log("[ElevenLabs] Received ping, sending pong");
                   if (message.ping_event?.event_id) {
                     elevenLabsWs.send(JSON.stringify({
                       type: "pong",
                       event_id: message.ping_event.event_id
                     }));
+
                   }
                   break;
 
@@ -368,23 +466,48 @@ export function registerOutboundRoutes(fastify) {
       // Set up ElevenLabs connection
       setupElevenLabs();
 
+
+      const connection = {
+        ws,
+        streamSid: null,
+        callSid: null,
+        phoneNumber: null,
+      };
+      let outboundChunkCounter = 0;
+
       // Handle messages from Twilio
-      ws.on("message", (message) => {
+      ws.on("message", async (message) => {
         try {
           const msg = JSON.parse(message);
 
+          if (msg.event != "media") {
+            console.log("MESSAGE RECEIVED FROM TWILIO:", msg.event);
+          }
+          if (msg.event == "mark") {
+            console.log("EVENT :", msg.event);
+          }
 
           switch (msg.event) {
             case "start":
               streamSid = msg.start.streamSid;
               callSid = msg.start.callSid;
               customParameters = msg.start.customParameters;  // Store parameters
+              connection["streamSid"] = streamSid;
+              connection['callSid'] = callSid;
+
+
+
+
+              // ws.send(mediaMessage);
               console.log(`[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
               console.log('[Twilio] Start parameters:', customParameters);
               break;
 
+
+
             case "media":
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+
                 const audioMessage = {
                   user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
                 };
@@ -392,8 +515,31 @@ export function registerOutboundRoutes(fastify) {
               }
               break;
 
+            case "mark":
+              console.log("twilio_AUDIO_COUNT");
+              console.log(eleven_AUDIO_COUNT);
+              console.log(twilio_AUDIO_COUNT)
+
+              if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
+                console.log("🟢 [Agent] Finished — safe to resume background");
+                BackgroundController.stop(); // ensure old loop dead
+                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.7, true);
+                twilio_AUDIO_COUNT = 0;
+                eleven_AUDIO_COUNT = -1
+              }
+              else {
+                twilio_AUDIO_COUNT++;
+              }
+              console.log("✔ All audio finished playing to caller!");
+              break;
+
+
             case "stop":
               console.log(`[Twilio] Stream ${streamSid} ended`);
+              twilio_AUDIO_COUNT = 0;
+              eleven_AUDIO_COUNT = -1;
+              BackgroundController.stop(); // ensure old loop dead
+
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 elevenLabsWs.close();
               }
@@ -403,6 +549,10 @@ export function registerOutboundRoutes(fastify) {
               console.log(`[Twilio] Unhandled event: ${msg.event}`);
           }
         } catch (error) {
+          BackgroundController.stop(); // ensure old loop dead
+          twilio_AUDIO_COUNT = 0;
+          eleven_AUDIO_COUNT = -1;
+
           console.error("[Twilio] Error processing message:", error);
         }
       });
@@ -410,10 +560,44 @@ export function registerOutboundRoutes(fastify) {
       // Handle WebSocket closure
       ws.on("close", () => {
         console.log("[Twilio] Client disconnected");
+        BackgroundController.stop(); // ensure old loop dead
+        twilio_AUDIO_COUNT = 0;
+        eleven_AUDIO_COUNT = -1;
         if (elevenLabsWs?.readyState === WebSocket.OPEN) {
           elevenLabsWs.close();
         }
       });
     });
   });
+}
+
+
+
+const CHUNK_SIZE = 160; // Standard µ-law chunk size for 8kHz audio (20ms)
+let outboundChunkCounter = 0;
+
+function sendNoiseChunk(connection) {
+  try {
+    // 1. Generate noise for this chunk
+    const noise = generateWhiteNoise(CHUNK_SIZE, 300); // Adjust amplitude as needed
+
+    // 2. Convert to µ-law
+    const encodedBuffer = encodeMuLawBuffer(noise);
+
+    const mediaMessage = {
+      event: "media",
+      streamSid: connection.streamSid,
+      media: {
+        payload: encodedBuffer.toString("base64"),
+        track: "background",   // background track (not outbound)
+        chunk: (++outboundChunkCounter).toString(),
+        timestamp: Date.now().toString()
+      },
+    };
+
+    // 4. Send to Twilio
+    connection.ws.send(JSON.stringify(mediaMessage));
+  } catch (err) {
+    console.error("Error sending noise chunk:", err);
+  }
 }
