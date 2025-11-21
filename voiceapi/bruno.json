@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "VoiceApi",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}

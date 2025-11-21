@@ -1,0 +1,17 @@
+meta {
+  name: outbound
+  type: http
+  seq: 1
+}
+
+post {
+  url: https://591cfa2358bf.ngrok-free.app/outbound-call
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "number":"+91 9290516680", "prompt":"Act as sales expert"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "VOICE AGENT",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}
