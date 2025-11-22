@@ -41,25 +41,20 @@ export function mulawEncode(sample) {
   return (~(sign | (exponent << 4) | mantissa)) & 0xFF;
 }
 
-// ------------ Load background PCM 16-bit mono 8000Hz ------------
 const bg = fs.readFileSync("./assets/office.raw");
 let bgOffset = 0;
 
-// Adjusted volumes to prevent clipping
-const VOICE_VOL = 1;  // High, clear voice
-const BG_VOL = 0.25;
+const VOICE_VOL = 1;
+const BG_VOL = 0.30;
 
-// Smoothing filters
 let prevVoiceSample = 0;
 let prevBgSample = 0;
 let dcFilterState = 0;
 
-// Low-pass filter for smoothing (removes high-frequency artifacts)
 function lowPassFilter(current, previous, alpha = 0.15) {
   return previous + alpha * (current - previous);
 }
 
-// DC offset removal filter
 function removeDCOffset(sample) {
   const DC_COEFF = 0.995;
   const filtered = sample - dcFilterState;
@@ -67,10 +62,9 @@ function removeDCOffset(sample) {
   return filtered;
 }
 
-// Soft limiter with smoother compression curve
 function softLimit(sample) {
-  const threshold = 26000;  // Lower threshold for earlier compression
-  const ratio = 3.0;        // Compression ratio
+  const threshold = 26000;
+  const ratio = 3.0;
 
   if (sample > threshold) {
     const excess = sample - threshold;
@@ -83,9 +77,7 @@ function softLimit(sample) {
   return sample;
 }
 
-// ---------------------------------------------------------------
-// Fixed audio mixer with smooth filtering
-// ---------------------------------------------------------------
+
 export function mixChunk(ulawChunk) {
   const len = ulawChunk.length;
   const pcm = new Int16Array(len);
@@ -138,14 +130,12 @@ export function mixChunk(ulawChunk) {
   return out;
 }
 
-// Optional: Reset filters when starting new audio stream
 export function resetBackgroundOffset() {
   bgOffset = 0;
   prevVoiceSample = 0;
   prevBgSample = 0;
   dcFilterState = 0;
 }
-// Optiona
 function mixWithBackground(base64Voice, backgroundPath) {
   return new Promise((resolve, reject) => {
     const voiceBuffer = Buffer.from(base64Voice, "base64");
@@ -179,16 +169,11 @@ function mixWithBackground(base64Voice, backgroundPath) {
 }
 
 
-
-
-
-
-
 let noiseInterval = null;
 
 
 export function registerOutboundRoutes(fastify) {
-  // Check for required environment variables
+
   const {
     ELEVENLABS_API_KEY,
     ELEVENLABS_AGENT_ID,
@@ -202,10 +187,8 @@ export function registerOutboundRoutes(fastify) {
     throw new Error("Missing required environment variables");
   }
 
-  // Initialize Twilio client
   const twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-  // Helper function to get signed URL for authenticated conversations
   async function getSignedUrl() {
     try {
       const response = await fetch(
@@ -230,7 +213,6 @@ export function registerOutboundRoutes(fastify) {
     }
   }
 
-  // Route to initiate outbound calls
   fastify.post("/outbound-call", async (request, reply) => {
     const { number, prompt } = request.body;
 
@@ -260,7 +242,6 @@ export function registerOutboundRoutes(fastify) {
     }
   });
 
-  // TwiML route for outbound calls
   fastify.all("/outbound-call-twiml", async (request, reply) => {
     const prompt = request.query.prompt || '';
 
@@ -276,24 +257,20 @@ export function registerOutboundRoutes(fastify) {
     reply.type("text/xml").send(twimlResponse);
   });
 
-  // WebSocket route for handling media streams
   fastify.register(async (fastifyInstance) => {
     fastifyInstance.get("/outbound-media-stream", { websocket: true }, (ws, req) => {
       console.info("[Server] Twilio connected to outbound media stream");
 
-      // Variables to track the call
       let streamSid = null;
       let callSid = null;
       let elevenLabsWs = null;
-      let customParameters = null;  // Add this to store parameters
+      let customParameters = null;
       let flag = false;
-      let eleven_AUDIO_COUNT = -1
-      let twilio_AUDIO_COUNT = 0
+      let eleven_AUDIO_COUNT = -1;
+      let twilio_AUDIO_COUNT = 0;
 
-      // Handle WebSocket errors
       ws.on('error', console.error);
 
-      // Set up ElevenLabs connection
       const setupElevenLabs = async () => {
         try {
           const signedUrl = await getSignedUrl();
@@ -316,9 +293,6 @@ export function registerOutboundRoutes(fastify) {
             try {
               const message = JSON.parse(data);
               let outboundChunkCounter = 0;
-
-              // console.log("[ElevenLabs] Received message:", message);
-
 
               switch (message.type) {
                 case "conversation_initiation_metadata":
@@ -348,10 +322,6 @@ export function registerOutboundRoutes(fastify) {
                       const mixed = mixChunk(ulaw);
                       // 3. Send mixed audio back
 
-
-
-
-
                       const audioData = {
                         event: "media",
                         streamSid,
@@ -368,9 +338,6 @@ export function registerOutboundRoutes(fastify) {
                         mark: { name: "agent_done" }
                       }));
                       ++eleven_AUDIO_COUNT
-
-
-
 
                     } else if (message.audio_event?.audio_base_64) {
                       // 1. Original inbound from ElevenLabs
@@ -382,8 +349,6 @@ export function registerOutboundRoutes(fastify) {
                         streamSid,
                         mark: { name: "agent_inclomming" }
                       }));
-                      // 2. Mix
-                      // 2. Mix with background
                       const ulaw = Buffer.from(original, "base64");
 
                       const mixed = mixChunk(ulaw);
@@ -392,8 +357,8 @@ export function registerOutboundRoutes(fastify) {
                         event: "media",
                         streamSid,
                         media: {
-                          payload: mixed.toString("base64"),   // <<< mixed instead of original
-                          track: "outbound",   // <--- send agent voice on outbound track
+                          payload: mixed.toString("base64"),   
+                          track: "outbound",   
                           timestamp: Date.now().toString()
                         },
                       };
@@ -404,10 +369,6 @@ export function registerOutboundRoutes(fastify) {
                         mark: { name: "agent_done" }
                       }));
                       ++eleven_AUDIO_COUNT
-
-
-
-
                     }
                   } else {
                     console.log("[ElevenLabs] Received audio but no StreamSid yet");
@@ -427,8 +388,6 @@ export function registerOutboundRoutes(fastify) {
 
                 case "agent_response":
                   console.log("[ElevenLabs] Agent response event:", message.agent_response_event);
-
-
                   break;
 
                 case "ping":
@@ -516,10 +475,10 @@ export function registerOutboundRoutes(fastify) {
               break;
 
             case "mark":
-  
 
-            console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
-            console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
+
+              console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
+              console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
               if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
                 console.log("🟢 [Agent] Finished — safe to resume background");
                 BackgroundController.stop(); // ensure old loop dead
@@ -531,9 +490,9 @@ export function registerOutboundRoutes(fastify) {
                   if (connection.callSid) {
                     twilioClient.calls(connection.callSid).update({ status: "completed" });
                   }
-                  return; 
+                  return;
                 }
-                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.7, true);
+                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.1, true);
                 twilio_AUDIO_COUNT = 0;
                 eleven_AUDIO_COUNT = -1
               }
@@ -548,7 +507,7 @@ export function registerOutboundRoutes(fastify) {
               console.log(`[Twilio] Stream ${streamSid} ended`);
               twilio_AUDIO_COUNT = 0;
               eleven_AUDIO_COUNT = -1;
-              BackgroundController.stop(); 
+              BackgroundController.stop();
 
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 elevenLabsWs.close();

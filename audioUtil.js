@@ -203,7 +203,7 @@ export function encodeMuLawBuffer(pcm) {
 export async function streamBackgroundToTwilio(
   connection,
   rawPath = "./background.raw",
-  volumeFactor = 1.0,     // <-- real volume multiplier
+  volumeFactor = 1.0,
   loop = true
 ) {
   if (!connection || !connection.streamSid || !connection.ws) {
@@ -211,54 +211,62 @@ export async function streamBackgroundToTwilio(
     return;
   }
 
+  console.log(`🔊 [BG] Loading file: ${rawPath}`);
   BackgroundController.start();
 
-  console.log(`🔊 [BG] Loading raw file: ${rawPath}`);
-
+  // -------------------------------------------------
+  // 1. Load full 16-bit PCM 8000Hz file
+  // -------------------------------------------------
   const pcmBuf = fs.readFileSync(rawPath);
-  const SAMPLES = 160; // 20ms
-  const FRAME = SAMPLES * 2;
+  const totalSamples = pcmBuf.length / 2;
 
-  let offset = 0;
-  let frameCount = 0;
+  const pcmSamples = new Int16Array(totalSamples);
+  for (let i = 0; i < totalSamples; i++) {
+    pcmSamples[i] = pcmBuf.readInt16LE(i * 2);
+  }
 
-  console.log("🎧 [BG] Streaming started…");
+  // -------------------------------------------------
+  // 2. Apply volume once
+  // -------------------------------------------------
+  if (volumeFactor !== 1.0) {
+    for (let i = 0; i < pcmSamples.length; i++) {
+      let v = pcmSamples[i] * volumeFactor;
+      if (v > 32767) v = 32767;
+      if (v < -32768) v = -32768;
+      pcmSamples[i] = v;
+    }
+  }
+
+  // -------------------------------------------------
+  // 3. Pre-encode 10ms μ-law frames (80 samples)
+  // -------------------------------------------------
+  const SAMPLES_PER_FRAME = 80;   // 10ms @ 8000Hz
+  const totalFrames = Math.floor(pcmSamples.length / SAMPLES_PER_FRAME);
+  const ulawFrames = new Array(totalFrames);
+
+  for (let f = 0; f < totalFrames; f++) {
+    const start = f * SAMPLES_PER_FRAME;
+    const frame = pcmSamples.subarray(start, start + SAMPLES_PER_FRAME);
+    ulawFrames[f] = encodeMuLawBuffer(frame).toString("base64");
+  }
+
+  console.log(`📦 [BG] Prepared ${totalFrames} frames (10ms each)`);
+
+  // -------------------------------------------------
+  // 4. PERFECT 10ms DRIFT-CORRECTED REALTIME CLOCK
+  // -------------------------------------------------
+  const FRAME_MS = 10;
+  let frameIndex = 0;
+  let nextTick = performance.now() + FRAME_MS;
+
+  console.log("🎧 [BG] Streaming 10ms loop started…");
 
   while (BackgroundController.running && !BackgroundController.cancel) {
 
-    if (offset + FRAME > pcmBuf.length) {
-      if (loop) {
-        console.log("🔁 [BG] Looping background audio…");
-        offset = 0;
-      } else {
-        console.log("📦 [BG] Reached end of file — stopping");
-        break;
-      }
-    }
+    // Current ULaw frame
+    const payload = ulawFrames[frameIndex];
 
-    // Extract PCM samples
-    const samples = new Int16Array(
-      pcmBuf.buffer,
-      pcmBuf.byteOffset + offset,
-      SAMPLES
-    );
-
-    // REAL VOLUME CONTROL — dim the background
-    if (volumeFactor !== 1.0) {
-      for (let i = 0; i < samples.length; i++) {
-        let v = samples[i] * volumeFactor;
-
-        // clip to avoid distortion
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-
-        samples[i] = v;
-      }
-    }
-
-    // µ-law encoding
-    const payload = encodeMuLawBuffer(samples).toString("base64");
-
+    // Send to Twilio
     connection.ws.send(
       JSON.stringify({
         event: "media",
@@ -267,17 +275,34 @@ export async function streamBackgroundToTwilio(
       })
     );
 
-    frameCount++;
-    console.log(`📨 [BG] Sent frame #${frameCount}, offset=${offset}, volume=${volumeFactor}`);
+    // Advance frame pointer
+    frameIndex++;
 
-    offset += FRAME;
+    if (frameIndex >= totalFrames) {
+      if (loop) {
+        frameIndex = 0;
+      } else {
+        break;
+      }
+    }
 
-    await new Promise((r) => setTimeout(r, 10));
+    // ----- REALTIME WAIT (NO DRIFT) -----
+    const now = performance.now();
+    const wait = nextTick - now;
+    nextTick += FRAME_MS;
+
+    if (wait > 0) {
+      await new Promise((r) => setTimeout(r, wait));
+    } else {
+      // If CPU lagged — catch up immediately
+      nextTick = performance.now() + FRAME_MS;
+    }
   }
 
   BackgroundController.running = false;
-  console.log("🛑 [BG] Background FULLY STOPPED (loop exited)");
+  console.log("🛑 [BG] Background audio fully stopped");
 }
+
 
 
 
