@@ -45,7 +45,7 @@ const bg = fs.readFileSync("./assets/office.raw");
 let bgOffset = 0;
 
 const VOICE_VOL = 1;
-const BG_VOL = 0.25;
+const BG_VOL = 0.35;
 
 let prevVoiceSample = 0;
 let prevBgSample = 0;
@@ -448,7 +448,7 @@ export function registerInboundRoutes(fastify) {
                     }
                     return;
                   }
-                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.1, true);
+                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.3, true);
                   twilio_AUDIO_COUNT = 0;
                   eleven_AUDIO_COUNT = -1
                 }
