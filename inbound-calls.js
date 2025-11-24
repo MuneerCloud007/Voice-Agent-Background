@@ -416,6 +416,7 @@ export function registerInboundRoutes(fastify) {
           callSid: null,
           phoneNumber: null,
         }
+        let markFlag=false;
 
         let outboundChunkCounter = 0;
 
@@ -446,7 +447,7 @@ export function registerInboundRoutes(fastify) {
 
               case "media":
                 //ELeven Labs agent is disconnected
-                if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
+                if (markFlag && twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
                   if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
                     console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
 
@@ -477,6 +478,7 @@ export function registerInboundRoutes(fastify) {
 
                 console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
                 console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
+                markFlag=true;
                 if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
                   console.log("🟢 [Agent] Finished — safe to resume background");
                   BackgroundController.stop(); // ensure old loop dead
