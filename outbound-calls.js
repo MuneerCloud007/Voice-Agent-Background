@@ -357,8 +357,8 @@ export function registerOutboundRoutes(fastify) {
                         event: "media",
                         streamSid,
                         media: {
-                          payload: mixed.toString("base64"),   
-                          track: "outbound",   
+                          payload: mixed.toString("base64"),
+                          track: "outbound",
                           timestamp: Date.now().toString()
                         },
                       };
@@ -454,10 +454,6 @@ export function registerOutboundRoutes(fastify) {
               connection["streamSid"] = streamSid;
               connection['callSid'] = callSid;
 
-
-
-
-              // ws.send(mediaMessage);
               console.log(`[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
               console.log('[Twilio] Start parameters:', customParameters);
               break;
@@ -465,6 +461,20 @@ export function registerOutboundRoutes(fastify) {
 
 
             case "media":
+              //code for ending the agent disconnect
+              if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
+                if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                  console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                  twilio_AUDIO_COUNT = 0;
+                  eleven_AUDIO_COUNT = -1
+
+                  if (connection.callSid) {
+                    twilioClient.calls(connection.callSid).update({ status: "completed" });
+                  }
+                  return;
+                }
+              }
+              //ELEVEN agent is live
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
 
                 const audioMessage = {
@@ -477,11 +487,11 @@ export function registerOutboundRoutes(fastify) {
             case "mark":
 
 
-              console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
-              console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
+
               if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
                 console.log("🟢 [Agent] Finished — safe to resume background");
                 BackgroundController.stop(); // ensure old loop dead
+
                 if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
                   console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
                   twilio_AUDIO_COUNT = 0;

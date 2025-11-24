@@ -421,11 +421,30 @@ export function registerInboundRoutes(fastify) {
 
 
               case "media":
+                //ELeven Labs agent is disconnected
+                if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
+                  if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                    twilio_AUDIO_COUNT = 0;
+                    eleven_AUDIO_COUNT = -1
+
+                    if (connection.callSid) {
+                      twilioClient.calls(connection.callSid).update({ status: "completed" });
+                    }
+                    return;
+                  }
+                }
+                //Eleven agent is connected
                 if (elevenLabsWs?.readyState === WebSocket.OPEN) {
 
                   const audioMessage = {
                     user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
                   }
+                  if (eleven_AUDIO_COUNT == -1 && twilio_AUDIO_COUNT == 0) {
+
+                  }
+
+
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 }
                 break;
