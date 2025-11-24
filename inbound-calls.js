@@ -416,7 +416,9 @@ export function registerInboundRoutes(fastify) {
           callSid: null,
           phoneNumber: null,
         }
-        let markFlag=false;
+        let markFlag = false;
+        let callEnd = false;
+
 
         let outboundChunkCounter = 0;
 
@@ -451,8 +453,9 @@ export function registerInboundRoutes(fastify) {
                   if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
                     console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
 
-                    if (connection.callSid) {
+                    if (!callEnd && connection.callSid) {
                       await endTwilioInboundCall(connection.callSid);
+                      callEnd = true
 
                     }
                     return;
@@ -478,7 +481,7 @@ export function registerInboundRoutes(fastify) {
 
                 console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
                 console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
-                markFlag=true;
+                markFlag = true;
                 if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
                   console.log("🟢 [Agent] Finished — safe to resume background");
                   BackgroundController.stop(); // ensure old loop dead
@@ -487,8 +490,10 @@ export function registerInboundRoutes(fastify) {
                     twilio_AUDIO_COUNT = 0;
                     eleven_AUDIO_COUNT = -1
 
-                    if (connection.callSid) {
+                    if (!callEnd && connection.callSid) {
                       await endTwilioInboundCall(connection.callSid);
+                      callEnd = true
+
                     }
                     return;
                   }
@@ -528,6 +533,8 @@ export function registerInboundRoutes(fastify) {
         });
         ws.on("close", () => {
           console.log("[Twilio] Client disconnected");
+          callEnd=false;
+          markFlag=false;
           if (elevenLabsWs?.readyState === WebSocket.OPEN) {
             elevenLabsWs.close();
           }
