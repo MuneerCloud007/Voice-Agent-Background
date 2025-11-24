@@ -184,6 +184,30 @@ export function registerInboundRoutes(fastify) {
     throw new Error("Missing ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID");
   }
 
+  async function endTwilioInboundCall(callSid) {
+    try {
+      if (!callSid) {
+        console.error("❌ endTwilioInboundCall: Missing CallSid");
+        return;
+      }
+
+      // Initialize Twilio client inside the same function
+      const client = Twilio(
+        process.env.TWILIO_ACCOUNT_SID,
+        process.env.TWILIO_AUTH_TOKEN
+      );
+
+      console.log(`☎️ Attempting to end inbound call: ${callSid}`);
+
+      await client.calls(callSid).update({ status: "completed" });
+
+      console.log(`✅ Successfully ended inbound call: ${callSid}`);
+    } catch (err) {
+      console.error("❌ Failed to end inbound call:", err);
+    }
+  }
+
+
   // Helper function to get signed URL
   async function getSignedUrl() {
     try {
@@ -425,9 +449,10 @@ export function registerInboundRoutes(fastify) {
                 if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
                   if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
                     console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
-                
+
                     if (connection.callSid) {
-                      twilioClient.calls(connection.callSid).update({ status: "completed" });
+                      await endTwilioInboundCall(connection.callSid);
+
                     }
                     return;
                   }
@@ -461,7 +486,7 @@ export function registerInboundRoutes(fastify) {
                     eleven_AUDIO_COUNT = -1
 
                     if (connection.callSid) {
-                      twilioClient.calls(connection.callSid).update({ status: "completed" });
+                      await endTwilioInboundCall(connection.callSid);
                     }
                     return;
                   }
