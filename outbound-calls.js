@@ -464,9 +464,8 @@ export function registerOutboundRoutes(fastify) {
               //code for ending the agent disconnect
               if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
                 if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
-                  console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
-                  twilio_AUDIO_COUNT = 0;
-                  eleven_AUDIO_COUNT = -1
+                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
+                 
 
                   if (connection.callSid) {
                     twilioClient.calls(connection.callSid).update({ status: "completed" });
