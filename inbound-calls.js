@@ -249,7 +249,7 @@ export function registerInboundRoutes(fastify) {
     reply.type("text/xml").send(twimlResponse);
   });
 
-  fastify.all("weitzma/incoming-call-ngroup", async (request, reply) => {
+  fastify.all("/incoming-call-weitzmangroup", async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
     <Connect>
@@ -569,7 +569,7 @@ export function registerInboundRoutes(fastify) {
       }
     });
 
- fastifyInstance.get("/weitzmangroup/media-stream", { websocket: true }, async (ws, req) => {
+    fastifyInstance.get("/weitzmangroup/media-stream", { websocket: true }, async (ws, req) => {
       console.info("[Server] Twilio connected to weitzmangroup media stream.");
 
       try {
@@ -774,9 +774,10 @@ export function registerInboundRoutes(fastify) {
                 //ELeven Labs agent is disconnected
                 if (markFlag && twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
                   if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
-                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
 
                     if (!callEnd && connection.callSid) {
+                      console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
+
                       await endTwilioInboundCall(connection.callSid);
                       callEnd = true
 
