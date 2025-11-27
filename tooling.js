@@ -1,8 +1,8 @@
 import Fuse from "fuse.js";
-import AustinModel from "../models/Austin.model.js";
+import {AustinModel} from "./models/Austin.model.js";
 
 export async function registerSearchRoute(fastify) {
-  fastify.post("/search", async (request, reply) => {
+  fastify.all("/search", async (request, reply) => {
     try {
       const { query } = request.body;
 

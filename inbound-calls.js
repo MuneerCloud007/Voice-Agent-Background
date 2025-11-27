@@ -249,7 +249,7 @@ export function registerInboundRoutes(fastify) {
     reply.type("text/xml").send(twimlResponse);
   });
 
-  fastify.all("incoming-call-weitzmangroup", async (request, reply) => {
+  fastify.all("weitzma/incoming-call-ngroup", async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
     <Connect>
