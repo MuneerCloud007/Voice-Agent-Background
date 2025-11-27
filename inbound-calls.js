@@ -177,9 +177,9 @@ function mixWithBackground(base64Voice, backgroundPath) {
 let noiseInterval = null;
 
 export function registerInboundRoutes(fastify) {
-  const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID } = process.env;
+  const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, WEITZMANGROUP_AGENT_ID } = process.env;
 
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID) {
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !WEITZMANGROUP_AGENT_ID) {
     console.error("Missing required environment variables");
     throw new Error("Missing ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID");
   }
@@ -209,10 +209,15 @@ export function registerInboundRoutes(fastify) {
 
 
   // Helper function to get signed URL
-  async function getSignedUrl() {
+  async function getSignedUrl(caseType) {
+
     try {
+      let parameters = ELEVENLABS_AGENT_ID;
+      if (caseType === "weitzmangroup") {
+        parameters = WEITZMANGROUP_AGENT_ID;
+      }
       const response = await fetch(
-        `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${ELEVENLABS_AGENT_ID}`,
+        `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${parameters}`,
         {
           method: 'GET',
           headers: {
@@ -244,6 +249,18 @@ export function registerInboundRoutes(fastify) {
     reply.type("text/xml").send(twimlResponse);
   });
 
+  fastify.all("incoming-call-weitzmangroup", async (request, reply) => {
+    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+    <Connect>
+    <Stream  url="wss://${request.headers.host}/weitzmangroup/media-stream" />
+    </Connect>
+    </Response>`
+
+    reply.type("text/xml").send(twimlResponse);
+
+  })
+
 
   fastify.register(async (fastifyInstance) => {
     fastifyInstance.get("/media-stream", { websocket: true }, async (ws, req) => {
@@ -264,7 +281,7 @@ export function registerInboundRoutes(fastify) {
 
         const setupElevenLabs = async () => {
           try {
-            const signedUrl = await getSignedUrl();
+            const signedUrl = await getSignedUrl("elevenLabs");
             elevenLabsWs = new WebSocket(signedUrl);
 
             elevenLabsWs.on("open", () => {
@@ -533,8 +550,8 @@ export function registerInboundRoutes(fastify) {
         });
         ws.on("close", () => {
           console.log("[Twilio] Client disconnected");
-          callEnd=false;
-          markFlag=false;
+          callEnd = false;
+          markFlag = false;
           if (elevenLabsWs?.readyState === WebSocket.OPEN) {
             elevenLabsWs.close();
           }
@@ -551,5 +568,312 @@ export function registerInboundRoutes(fastify) {
 
       }
     });
+
+ fastifyInstance.get("/weitzmangroup/media-stream", { websocket: true }, async (ws, req) => {
+      console.info("[Server] Twilio connected to weitzmangroup media stream.");
+
+      try {
+
+        let streamSid = null;
+        let callSid = null;
+        let elevenLabsWs = null;
+        let customParameters = null;
+        let flag = false;
+        let eleven_AUDIO_COUNT = -1;
+        let twilio_AUDIO_COUNT = 0;
+
+
+        ws.on('error', console.error);
+
+        const setupElevenLabs = async () => {
+          try {
+            const signedUrl = await getSignedUrl("weitzmangroup");
+            elevenLabsWs = new WebSocket(signedUrl);
+
+            elevenLabsWs.on("open", () => {
+              console.log("[ElevenLabs] Connected to Conversational AI");
+
+              const initialConfig = {
+                type: "conversation_initiation_client_data"
+              };
+
+              elevenLabsWs.send(JSON.stringify(initialConfig));
+            });
+
+            elevenLabsWs.on("message", async (data) => {
+              try {
+                const message = JSON.parse(data);
+                let outboundChunkCounter = 0;
+
+                switch (message.type) {
+                  case "conversation_initiation_metadata":
+                    console.log("[ElevenLabs] Received initiation metadata");
+                    break;
+
+                  case "audio":
+                    if (streamSid) {
+                      if (message.audio?.chunk) {
+
+                        const original = message.audio.chunk;
+
+                        console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                        BackgroundController.stop();
+
+                        ws.send(JSON.stringify({
+                          event: "incomming_call",
+                          streamSid,
+                          mark: { name: "agent_inclomming" }
+                        }));
+
+                        const ulaw = Buffer.from(original, "base64");
+
+                        const mixed = mixChunk(ulaw);
+
+                        const audioData = {
+                          event: "media",
+                          streamSid,
+                          media: {
+                            payload: mixed.toString("base64"),
+                            track: "outbound",
+                            timestamp: Date.now().toString()
+                          },
+                        };
+                        ws.send(JSON.stringify(audioData));
+                        ws.send(JSON.stringify({
+                          event: "mark",
+                          streamSid,
+                          mark: { name: "agent_done" }
+                        }));
+                        ++eleven_AUDIO_COUNT
+
+
+
+
+                      } else if (message.audio_event?.audio_base_64) {
+                        // 1. Original inbound from ElevenLabs
+                        const original = message.audio_event.audio_base_64;
+                        console.log("🎙️ [Agent] Speaking detected — stopping background...");
+                        BackgroundController.stop();
+                        ws.send(JSON.stringify({
+                          event: "incomming_call",
+                          streamSid,
+                          mark: { name: "agent_inclomming" }
+                        }));
+                        const ulaw = Buffer.from(original, "base64");
+
+                        const mixed = mixChunk(ulaw);
+                        // 3. Send mixed audio
+                        const audioData = {
+                          event: "media",
+                          streamSid,
+                          media: {
+                            payload: mixed.toString("base64"),   // <<< mixed instead of original
+                            track: "outbound",   // <--- send agent voice on outbound track
+                            timestamp: Date.now().toString()
+                          },
+                        };
+                        ws.send(JSON.stringify(audioData));
+                        ws.send(JSON.stringify({
+                          event: "mark",
+                          streamSid,
+                          mark: { name: "agent_done" }
+                        }));
+                        ++eleven_AUDIO_COUNT
+                      }
+                    } else {
+                      console.log("[ElevenLabs] Received audio but no StreamSid yet");
+                    }
+                    break;
+
+                  case "interruption":
+                    if (streamSid) {
+                      ws.send(JSON.stringify({
+                        event: "clear",
+                        streamSid
+                      }));
+
+                    }
+                    break;
+
+                  case "agent_response":
+                    console.log("[ElevenLabs] Agent response event:", message.agent_response_event);
+                    break;
+
+                  case "ping":
+                    console.log("[ElevenLabs] Received ping, sending pong");
+                    if (message.ping_event?.event_id) {
+                      elevenLabsWs.send(JSON.stringify({
+                        type: "pong",
+                        event_id: message.ping_event.event_id
+                      }));
+
+                    }
+                    break;
+
+                  default:
+                    console.log(`[ElevenLabs] Unhandled message type: ${message.type}`);
+                }
+              } catch (error) {
+                console.error("[ElevenLabs] Error processing message:", error);
+              }
+            });
+
+            elevenLabsWs.on("error", (error) => {
+              console.error("[ElevenLabs] WebSocket error:", error);
+            });
+
+            elevenLabsWs.on("close", () => {
+              console.log("[ElevenLabs] Disconnected");
+            });
+
+          } catch (error) {
+            console.error("[ElevenLabs] Setup error:", error);
+          }
+        };
+
+        setupElevenLabs();
+
+        const connection = {
+          ws,
+          streamSid: null,
+          callSid: null,
+          phoneNumber: null,
+        }
+        let markFlag = false;
+        let callEnd = false;
+
+
+        let outboundChunkCounter = 0;
+
+        ws.on("message", async (message) => {
+          try {
+            const msg = JSON.parse(message);
+
+            if (msg.event != "media") {
+              console.log("MESSAGE RECEIVED FROM TWILIO:", msg.event);
+            }
+            if (msg.event == "mark") {
+              console.log("EVENT :", msg.event);
+            }
+
+            switch (msg.event) {
+              case "start":
+                streamSid = msg.start.streamSid;
+                callSid = msg.start.callSid;
+                customParameters = msg.start.customParameters;
+                connection["streamSid"] = streamSid;
+                connection['callSid'] = callSid;
+
+                console.log(`[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
+                console.log('[Twilio] Start parameters:', customParameters);
+                break;
+
+
+
+              case "media":
+                //ELeven Labs agent is disconnected
+                if (markFlag && twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
+                  if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
+
+                    if (!callEnd && connection.callSid) {
+                      await endTwilioInboundCall(connection.callSid);
+                      callEnd = true
+
+                    }
+                    return;
+                  }
+                }
+                //Eleven agent is connected
+                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+
+                  const audioMessage = {
+                    user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
+                  }
+                  if (eleven_AUDIO_COUNT == -1 && twilio_AUDIO_COUNT == 0) {
+
+                  }
+
+
+                  elevenLabsWs.send(JSON.stringify(audioMessage));
+                }
+                break;
+
+              case "mark":
+
+
+                console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
+                console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
+                markFlag = true;
+                if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
+                  console.log("🟢 [Agent] Finished — safe to resume background");
+                  BackgroundController.stop(); // ensure old loop dead
+                  if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                    twilio_AUDIO_COUNT = 0;
+                    eleven_AUDIO_COUNT = -1
+
+                    if (!callEnd && connection.callSid) {
+                      await endTwilioInboundCall(connection.callSid);
+                      callEnd = true
+
+                    }
+                    return;
+                  }
+                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.3, true);
+                  twilio_AUDIO_COUNT = 0;
+                  eleven_AUDIO_COUNT = -1
+                }
+                else {
+                  twilio_AUDIO_COUNT++;
+                }
+                console.log("✔ All audio finished playing to caller!");
+                break;
+
+
+
+              case "stop":
+                console.log(`[Twilio] Stream ${streamSid} ended`);
+                twilio_AUDIO_COUNT = 0;
+                eleven_AUDIO_COUNT = -1;
+                BackgroundController.stop();
+
+                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                  elevenLabsWs.close();
+                }
+                break;
+
+              default:
+                console.log(`[Twilio] Unhandled event: ${msg.event}`);
+            }
+          } catch (error) {
+            BackgroundController.stop(); // ensure old loop dead
+            twilio_AUDIO_COUNT = 0;
+            eleven_AUDIO_COUNT = -1;
+
+            console.error("[Twilio] Error processing message:", error);
+          }
+        });
+        ws.on("close", () => {
+          console.log("[Twilio] Client disconnected");
+          callEnd = false;
+          markFlag = false;
+          if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+            elevenLabsWs.close();
+          }
+        });
+
+        // Handle errors
+
+        ws.on("error", (error) => {
+          console.error("[Twilio] WebSocket error:", error);
+        });
+
+      } catch (error) {
+        console.error("[Server] Error initializing conversation:", error);
+
+      }
+    });
+
   });
 }

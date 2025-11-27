@@ -4,6 +4,8 @@ import fastifyFormBody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
 import { registerInboundRoutes } from './inbound-calls.js';
 import { registerOutboundRoutes } from './outbound-calls.js';
+import {registerSearchRoute} from './tooling.js';
+import dbConnect from './config/dbConnection.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -15,6 +17,16 @@ const fastify = Fastify({
 
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
+
+
+fastify.addHook("onRequest", async (request, reply) => {
+  if (!fastify.mongoConnected) {
+    await dbConnect(process.env.MONGODB_URI);
+    fastify.mongoConnected = true;
+    console.log("MongoDB Connected (Fastify Hook)");
+  }
+});
+
 
 const PORT =  5000;
 
@@ -29,6 +41,7 @@ const start = async () => {
     // Register route handlers
     await registerInboundRoutes(fastify);
     await registerOutboundRoutes(fastify);
+    await registerSearchRoute(fastify);
 
     // Start listening
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
