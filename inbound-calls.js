@@ -177,9 +177,9 @@ function mixWithBackground(base64Voice, backgroundPath) {
 let noiseInterval = null;
 
 export function registerInboundRoutes(fastify) {
-  const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, WEITZMANGROUP_AGENT_ID } = process.env;
+  const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, WEITZMANGROUP_AGENT_ID,WEITZMANGROUP_API_KEY } = process.env;
 
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !WEITZMANGROUP_AGENT_ID) {
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !WEITZMANGROUP_AGENT_ID || !WEITZMANGROUP_API_KEY) {
     console.error("Missing required environment variables");
     throw new Error("Missing ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID");
   }
@@ -197,11 +197,9 @@ export function registerInboundRoutes(fastify) {
         process.env.TWILIO_AUTH_TOKEN
       );
 
-      console.log(`☎️ Attempting to end inbound call: ${callSid}`);
 
       await client.calls(callSid).update({ status: "completed" });
 
-      console.log(`✅ Successfully ended inbound call: ${callSid}`);
     } catch (err) {
       console.error("❌ Failed to end inbound call:", err);
     }
@@ -213,15 +211,17 @@ export function registerInboundRoutes(fastify) {
 
     try {
       let parameters = ELEVENLABS_AGENT_ID;
+      let api = ELEVENLABS_API_KEY;
       if (caseType === "weitzmangroup") {
         parameters = WEITZMANGROUP_AGENT_ID;
+        api = WEITZMANGROUP_API_KEY;
       }
       const response = await fetch(
         `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${parameters}`,
         {
           method: 'GET',
           headers: {
-            'xi-api-key': ELEVENLABS_API_KEY
+            'xi-api-key': api
           }
         }
       );
@@ -282,7 +282,9 @@ export function registerInboundRoutes(fastify) {
         const setupElevenLabs = async () => {
           try {
             const signedUrl = await getSignedUrl("elevenLabs");
-            elevenLabsWs = new WebSocket(signedUrl);
+            elevenLabsWs = new WebSocket(signedUrl,{
+                handshakeTimeout: 20000 
+            });
 
             elevenLabsWs.on("open", () => {
               console.log("[ElevenLabs] Connected to Conversational AI");
@@ -484,11 +486,8 @@ export function registerInboundRoutes(fastify) {
                   const audioMessage = {
                     user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
                   }
-                  if (eleven_AUDIO_COUNT == -1 && twilio_AUDIO_COUNT == 0) {
 
-                  }
-
-
+                
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 }
                 break;
@@ -514,7 +513,7 @@ export function registerInboundRoutes(fastify) {
                     }
                     return;
                   }
-                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.3, true);
+                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.2, true);
                   twilio_AUDIO_COUNT = 0;
                   eleven_AUDIO_COUNT = -1
                 }
@@ -821,7 +820,7 @@ export function registerInboundRoutes(fastify) {
                     }
                     return;
                   }
-                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.3, true);
+                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.2, true);
                   twilio_AUDIO_COUNT = 0;
                   eleven_AUDIO_COUNT = -1
                 }
