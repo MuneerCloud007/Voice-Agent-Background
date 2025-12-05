@@ -798,8 +798,6 @@ export function registerInboundRoutes(fastify) {
                 break;
 
               case "mark":
-
-
                 console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
                 console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
                 markFlag = true;
@@ -825,7 +823,6 @@ export function registerInboundRoutes(fastify) {
                 else {
                   twilio_AUDIO_COUNT++;
                 }
-                console.log("✔ All audio finished playing to caller!");
                 break;
 
 

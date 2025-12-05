@@ -187,6 +187,29 @@ export function registerOutboundRoutes(fastify) {
     throw new Error("Missing required environment variables");
   }
 
+
+    async function endTwilioInboundCall(callSid) {
+      try {
+        if (!callSid) {
+          console.error("❌ endTwilioInboundCall: Missing CallSid");
+          return;
+        }
+  
+        // Initialize Twilio client inside the same function
+        const client = Twilio(
+          process.env.TWILIO_ACCOUNT_SID,
+          process.env.TWILIO_AUTH_TOKEN
+        );
+  
+  
+        await client.calls(callSid).update({ status: "completed" });
+  
+      } catch (err) {
+        console.error("❌ Failed to end inbound call:", err);
+      }
+    }
+  
+
   const twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
   async function getSignedUrl() {
@@ -480,7 +503,6 @@ export function registerOutboundRoutes(fastify) {
                   return;
                 }
               }
-              //Eleven agent is connected
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
 
                 const audioMessage = {
@@ -491,33 +513,32 @@ export function registerOutboundRoutes(fastify) {
               break;
 
 
-            case "mark":
+              case "mark":
+                console.log(`ELEVEN LABS CHUNK COUNT, ${eleven_AUDIO_COUNT}`);
+                console.log(`TWILIO LABS CHUNK COUNT, ${twilio_AUDIO_COUNT}`);
+                markFlag = true;
+                if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
+                  console.log("🟢 [Agent] Finished — safe to resume background");
+                  BackgroundController.stop(); // ensure old loop dead
+                  if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                    twilio_AUDIO_COUNT = 0;
+                    eleven_AUDIO_COUNT = -1
 
-
-
-              if (eleven_AUDIO_COUNT === twilio_AUDIO_COUNT) {
-                console.log("🟢 [Agent] Finished — safe to resume background");
-                BackgroundController.stop(); // ensure old loop dead
-
-                if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
-                  console.log("🔴 ElevenLabs is disconnected — ending Twilio call");
+                    if (!callEnd && connection.callSid) {
+                      await endTwilioInboundCall(connection.callSid);
+                      callEnd = true
+                    }
+                    return;
+                  }
+                  streamBackgroundToTwilio(connection, "./assets/office.raw", 0.2, true);
                   twilio_AUDIO_COUNT = 0;
                   eleven_AUDIO_COUNT = -1
-
-                  if (connection.callSid) {
-                    twilioClient.calls(connection.callSid).update({ status: "completed" });
-                  }
-                  return;
                 }
-                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.2, true);
-                twilio_AUDIO_COUNT = 0;
-                eleven_AUDIO_COUNT = -1
-              }
-              else {
-                twilio_AUDIO_COUNT++;
-              }
-              console.log("✔ All audio finished playing to caller!");
-              break;
+                else {
+                  twilio_AUDIO_COUNT++;
+                }
+                break;
 
 
             case "stop":
