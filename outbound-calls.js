@@ -175,14 +175,14 @@ let noiseInterval = null;
 export function registerOutboundRoutes(fastify) {
 
   const {
-    ELEVENLABS_API_KEY,
-    ELEVENLABS_AGENT_ID,
+    WEITZMANGROUP_API_KEY,
+    Pathkind_AGENT_ID,
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_PHONE_NUMBER
   } = process.env;
 
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_AGENT_ID || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+  if (!WEITZMANGROUP_API_KEY || !Pathkind_AGENT_ID || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
     console.error("Missing required environment variables");
     throw new Error("Missing required environment variables");
   }
@@ -192,14 +192,16 @@ export function registerOutboundRoutes(fastify) {
   async function getSignedUrl() {
     try {
       const response = await fetch(
-        `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${ELEVENLABS_AGENT_ID}`,
+        `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${Pathkind_AGENT_ID}`,
         {
           method: 'GET',
           headers: {
-            'xi-api-key': ELEVENLABS_API_KEY
+            'xi-api-key': WEITZMANGROUP_API_KEY
           }
         }
       );
+
+
 
       if (!response.ok) {
         throw new Error(`Failed to get signed URL: ${response.statusText}`);
@@ -214,7 +216,7 @@ export function registerOutboundRoutes(fastify) {
   }
 
   fastify.post("/outbound-call", async (request, reply) => {
-    const { number, prompt } = request.body;
+    const { number } = request.body;
 
     if (!number) {
       return reply.code(400).send({ error: "Phone number is required" });
@@ -432,6 +434,8 @@ export function registerOutboundRoutes(fastify) {
         callSid: null,
         phoneNumber: null,
       };
+       let markFlag = false;
+        let callEnd = false;
       let outboundChunkCounter = 0;
 
       // Handle messages from Twilio
@@ -460,28 +464,32 @@ export function registerOutboundRoutes(fastify) {
 
 
 
-            case "media":
-              //code for ending the agent disconnect
-              if (twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
-                if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
-                    console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
-                 
+        
 
-                  if (connection.callSid) {
-                    twilioClient.calls(connection.callSid).update({ status: "completed" });
+            case "media":
+              //ELeven Labs agent is disconnected
+              if (markFlag && twilio_AUDIO_COUNT == 0 && eleven_AUDIO_COUNT == -1) {
+                if (!elevenLabsWs || elevenLabsWs.readyState !== 1) {
+                  console.log("🔴 ElevenLabs is disconnected — ending Twilio call CASE:Media");
+
+                  if (!callEnd && connection.callSid) {
+                    await endTwilioInboundCall(connection.callSid);
+                    callEnd = true
+
                   }
                   return;
                 }
               }
-              //ELEVEN agent is live
+              //Eleven agent is connected
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
 
                 const audioMessage = {
                   user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
-                };
+                }
                 elevenLabsWs.send(JSON.stringify(audioMessage));
               }
               break;
+
 
             case "mark":
 
@@ -501,7 +509,7 @@ export function registerOutboundRoutes(fastify) {
                   }
                   return;
                 }
-                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.3, true);
+                streamBackgroundToTwilio(connection, "./assets/office.raw", 0.2, true);
                 twilio_AUDIO_COUNT = 0;
                 eleven_AUDIO_COUNT = -1
               }

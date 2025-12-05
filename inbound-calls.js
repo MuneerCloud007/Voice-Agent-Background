@@ -486,8 +486,6 @@ export function registerInboundRoutes(fastify) {
                   const audioMessage = {
                     user_audio_chunk: Buffer.from(msg.media.payload, "base64").toString("base64")
                   }
-
-                
                   elevenLabsWs.send(JSON.stringify(audioMessage));
                 }
                 break;
